@@ -230,15 +230,23 @@ def add_memories(req: AddRequest):
 def search_memories(req: SearchRequest):
     """Search memories by semantic similarity + BM25 + entity boost."""
     mem = _get_memory()
-    params: dict[str, Any] = {"limit": req.limit}
+    # Keep the benchmark HTTP contract (limit + top-level IDs), but adapt it
+    # to the current Mem0 OSS SDK (top_k + filters).
+    filters: dict[str, Any] = dict(req.filters or {})
     if req.user_id:
-        params["user_id"] = req.user_id
+        filters["user_id"] = req.user_id
     if req.agent_id:
-        params["agent_id"] = req.agent_id
+        filters["agent_id"] = req.agent_id
     if req.run_id:
-        params["run_id"] = req.run_id
-    if req.filters:
-        params["filters"] = req.filters
+        filters["run_id"] = req.run_id
+
+    if not any(filters.get(key) for key in ("user_id", "agent_id", "run_id")):
+        raise HTTPException(
+            400,
+            "Provide at least one of: user_id, agent_id, run_id for Mem0 search",
+        )
+
+    params: dict[str, Any] = {"top_k": req.limit, "filters": filters}
     if req.rerank:
         params["rerank"] = True
 
@@ -255,22 +263,24 @@ def get_memories(
     user_id: str | None = Query(None),
     agent_id: str | None = Query(None),
     run_id: str | None = Query(None),
+    limit: int = Query(1000, ge=1, le=10000),
 ):
     """List all memories for a given user/agent/run."""
     mem = _get_memory()
-    params: dict[str, Any] = {}
+    filters: dict[str, Any] = {}
     if user_id:
-        params["user_id"] = user_id
+        filters["user_id"] = user_id
     if agent_id:
-        params["agent_id"] = agent_id
+        filters["agent_id"] = agent_id
     if run_id:
-        params["run_id"] = run_id
+        filters["run_id"] = run_id
 
-    if not params:
+    if not filters:
         raise HTTPException(400, "Provide at least one of: user_id, agent_id, run_id")
 
     try:
-        return mem.get_all(**params)
+        # Mem0's get_all() uses filters=... and top_k=..., not top-level IDs.
+        return mem.get_all(filters=filters, top_k=limit)
     except Exception as e:
         logger.exception("get_all() failed")
         raise HTTPException(500, str(e))
