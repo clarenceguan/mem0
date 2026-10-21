@@ -1,0 +1,29 @@
+# Local, non-Docker evaluation config for the convert-evaluation-to-subtree branch.
+# Set LLM_API_KEY and LLM_BASE_URL in the shell before starting the server.
+
+version: "v1.1"
+
+llm:
+  provider: openai
+  config:
+    model: qwen3.5-397b-a17b
+    api_key: ${LLM_API_KEY}
+    openai_base_url: ${LLM_BASE_URL}
+    temperature: 0.1
+
+embedder:
+  provider: huggingface
+  config:
+    model: /home/guanxin/model/Qwen/Qwen3-Embedding-0.6B
+    embedding_dims: 1024
+    model_kwargs:
+      device: cuda
+
+vector_store:
+  provider: qdrant
+  config:
+    path: ./data/qdrant_locomo
+    collection_name: locomo_qwen3
+    embedding_model_dims: 1024
+
+history_db_path: ./data/history_locomo.db
