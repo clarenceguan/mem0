@@ -1,0 +1,44 @@
+# Local vLLM config for Qwen3.8-27B-NVFP4.
+# Example environment:
+#   export LLM_API_KEY=EMPTY
+#   export LLM_BASE_URL=http://127.0.0.1:8000/v1
+#
+# Official Qwen3.8 thinking-mode sampling preset.
+# vLLM-specific sampling parameters and chat-template options are forwarded
+# through OpenAIConfig.extra_body by mem0/llms/openai.py.
+
+version: "v1.1"
+
+llm:
+  provider: openai
+  config:
+    model: Qwen3.8-27B-NVFP4
+    api_key: ${LLM_API_KEY}
+    openai_base_url: ${LLM_BASE_URL}
+    temperature: 1.0
+    top_p: 0.95
+    extra_body:
+      top_k: 20
+      min_p: 0.0
+      presence_penalty: 0.0
+      repetition_penalty: 1.0
+      chat_template_kwargs:
+        enable_thinking: true
+        preserve_thinking: true
+
+embedder:
+  provider: huggingface
+  config:
+    model: /home/guanxin/model/Qwen/Qwen3-Embedding-0.6B
+    embedding_dims: 1024
+    model_kwargs:
+      device: cuda
+
+vector_store:
+  provider: qdrant
+  config:
+    path: ./data/qdrant_locomo
+    collection_name: locomo_qwen3
+    embedding_model_dims: 1024
+
+history_db_path: ./data/history_locomo.db
