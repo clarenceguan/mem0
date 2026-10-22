@@ -178,6 +178,7 @@ class AddRequest(BaseModel):
     run_id: str | None = None
     metadata: dict[str, Any] | None = None
     observation_date: str | None = None
+    timestamp: int | None = None
     custom_instructions: str | None = None
 
 
@@ -211,10 +212,13 @@ def add_memories(req: AddRequest):
         params["agent_id"] = req.agent_id
     if req.run_id:
         params["run_id"] = req.run_id
-    if req.metadata:
-        params["metadata"] = req.metadata
-    # observation_date and custom_instructions: pass through only if
-    # the installed mem0ai version supports them
+    metadata = dict(req.metadata or {})
+    if req.observation_date:
+        metadata["source_session_date"] = req.observation_date
+    if metadata:
+        params["metadata"] = metadata
+    if req.timestamp is not None:
+        params["timestamp"] = req.timestamp
     if req.custom_instructions:
         params["prompt"] = req.custom_instructions
 
