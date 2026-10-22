@@ -118,6 +118,34 @@ All benchmarks accept these common flags:
 --mem0-host URL            Mem0 server URL (default: http://localhost:8888)
 ```
 
+### Independent evaluation API settings and thinking mode
+
+The LOCOMO Answerer and Judge clients are independent of the Mem0 server's YAML configuration.
+For OpenAI-compatible endpoints, configure them separately with CLI flags or environment variables:
+
+```bash
+export ANSWERER_API_KEY="your-answerer-key"
+export ANSWERER_BASE_URL="https://your-answerer-endpoint/v1"
+export JUDGE_API_KEY="your-judge-key"
+export JUDGE_BASE_URL="https://your-judge-endpoint/v1"
+
+python -m benchmarks.locomo.run \
+  --project-name qwen35-locomo \
+  --provider openai \
+  --answerer-model qwen3.5-397b-a17b \
+  --judge-model qwen3.5-397b-a17b \
+  --disable-thinking
+```
+
+Use `--answerer-disable-thinking` or `--judge-disable-thinking` to disable thinking for only one role.
+Alternatively, set `EVAL_DISABLE_THINKING=1` to disable thinking for both OpenAI-compatible evaluation clients.
+The flag sends `extra_body={"enable_thinking": false}`; use it only with endpoints that support this field.
+The environment variables `ANSWERER_API_KEY` / `ANSWERER_BASE_URL` and
+`JUDGE_API_KEY` / `JUDGE_BASE_URL` are independent from Mem0's `LLM_API_KEY` / `LLM_BASE_URL`.
+
+For Mem0's extraction LLM, configure the Mem0 YAML separately. The local Qwen example
+`configs/local-qwen3.5.yaml` includes `llm.config.extra_body.enable_thinking: false`.
+
 ### Custom Models
 
 By default, the Mem0 server uses OpenAI for fact extraction (`gpt-4o-mini`) and embeddings (`text-embedding-3-small`). You can change this by mounting a custom config file.
