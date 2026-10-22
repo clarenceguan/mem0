@@ -409,13 +409,81 @@ def _escape_scope_value(val: Any) -> str:
     return str(val).replace("%", "%25").replace("&", "%26").replace("=", "%3D")
 
 
-def _build_session_scope(filters):
-    """Build deterministic session scope string from entity IDs."""
+def _normalize_source_session_timestamp(value: Any) -> Optional[int]:
+    """Normalize a session timestamp/date to Unix seconds (UTC)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("timestamp must be a Unix timestamp or ISO date/datetime, not a boolean")
+    if isinstance(value, datetime):
+        parsed = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(parsed.astimezone(timezone.utc).timestamp())
+    if isinstance(value, date):
+        return int(datetime(value.year, value.month, value.day, tzinfo=timezone.utc).timestamp())
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return int(float(raw))
+        except ValueError:
+            pass
+        try:
+            parsed_date = date.fromisoformat(raw)
+            return int(datetime(parsed_date.year, parsed_date.month, parsed_date.day, tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            pass
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.astimezone(timezone.utc).timestamp())
+        except ValueError as exc:
+            raise ValueError("timestamp must be a Unix timestamp or ISO date/datetime") from exc
+    raise TypeError("timestamp must be a Unix timestamp, date, datetime, or ISO date/datetime string")
+
+
+def _resolve_source_session_date(timestamp: Any, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Resolve the source conversation date without confusing it with record creation time."""
+    metadata = metadata or {}
+    candidate = metadata.get("source_session_date") or metadata.get("observation_date")
+    if candidate is not None:
+        if isinstance(candidate, datetime):
+            parsed = candidate if candidate.tzinfo is not None else candidate.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).date().isoformat()
+        if isinstance(candidate, date):
+            return candidate.isoformat()
+        if isinstance(candidate, str):
+            raw = candidate.strip()
+            try:
+                return date.fromisoformat(raw).isoformat()
+            except ValueError:
+                try:
+                    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    return parsed.astimezone(timezone.utc).date().isoformat()
+                except ValueError as exc:
+                    raise ValueError("source_session_date must be an ISO date or datetime") from exc
+        raise TypeError("source_session_date must be a date, datetime, or ISO date/datetime string")
+
+    normalized_timestamp = _normalize_source_session_timestamp(timestamp)
+    if normalized_timestamp is None:
+        return None
+    return datetime.fromtimestamp(normalized_timestamp, tz=timezone.utc).date().isoformat()
+
+
+def _build_session_scope(filters, source_session_id: Optional[str] = None):
+    """Build deterministic SQLite history scope from entity IDs and optional source session."""
     parts = []
     for key in sorted(["user_id", "agent_id", "run_id"]):
         val = filters.get(key)
         if val:
             parts.append(f"{key}={_escape_scope_value(val)}")
+    if source_session_id:
+        parts.append(f"source_session_id={_escape_scope_value(source_session_id)}")
     return "&".join(parts)
 
 
@@ -814,11 +882,26 @@ class Memory(MemoryBase):
             LLMError: If LLM operations fail.
             DatabaseError: If database operations fail.
         """
-        if timestamp is not None:
-            raise ValueError(get_temporal_feature_error_message("sync", "add", "timestamp"))
-
         normalized_expiration_date = _normalize_expiration_date(expiration_date)
-        temporal_usage_notice = detect_temporal_usage_from_metadata(metadata)
+        notice_metadata = {
+            key: value
+            for key, value in (metadata or {}).items()
+            if key not in {"source_session_date", "source_session_timestamp", "source_session_id", "observation_date"}
+        }
+        temporal_usage_notice = detect_temporal_usage_from_metadata(notice_metadata)
+
+        source_timestamp_value = timestamp
+        if source_timestamp_value is None and metadata:
+            source_timestamp_value = metadata.get("source_session_timestamp")
+        source_session_timestamp = _normalize_source_session_timestamp(source_timestamp_value)
+        source_session_date = _resolve_source_session_date(source_timestamp_value, metadata)
+        if source_session_date is not None or source_session_timestamp is not None:
+            metadata = deepcopy(metadata) if metadata else {}
+            if source_session_date is not None:
+                metadata["source_session_date"] = source_session_date
+            if source_session_timestamp is not None:
+                metadata["source_session_timestamp"] = source_session_timestamp
+
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id,
             agent_id=agent_id,
@@ -868,7 +951,14 @@ class Memory(MemoryBase):
         else:
             messages = parse_vision_messages(messages)
 
-        vector_store_result = self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, prompt=prompt)
+        vector_store_result = self._add_to_vector_store(
+            messages,
+            processed_metadata,
+            effective_filters,
+            infer,
+            prompt=prompt,
+            observation_date=source_session_date,
+        )
         scale_threshold_notice = detect_scale_threshold_from_add_result(self, vector_store_result)
         if temporal_usage_notice:
             display_temporal_usage_notice(self, "sync", "add", *temporal_usage_notice)
@@ -878,7 +968,9 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "add")
         return {"results": vector_store_result}
 
-    def _add_to_vector_store(self, messages, metadata, filters, infer, prompt=None):
+    def _add_to_vector_store(
+        self, messages, metadata, filters, infer, prompt=None, observation_date: Optional[str] = None
+    ):
         if not infer:
             returned_memories = []
             for message_dict in messages:
@@ -918,7 +1010,7 @@ class Memory(MemoryBase):
         # === V3 PHASED BATCH PIPELINE ===
 
         # Phase 0: Context gathering
-        session_scope = _build_session_scope(filters)
+        session_scope = _build_session_scope(filters, (metadata or {}).get("source_session_id"))
         last_messages = self.db.get_last_messages(session_scope, limit=10)
         parsed_messages = parse_messages(messages)
 
@@ -951,6 +1043,7 @@ class Memory(MemoryBase):
             existing_memories=existing_memories,
             new_messages=parsed_messages,
             last_k_messages=last_messages,
+            timestamp=observation_date,
             custom_instructions=custom_instr,
         )
 
@@ -2493,11 +2586,26 @@ class AsyncMemory(MemoryBase):
         Returns:
             dict: A dictionary containing the result of the memory addition operation.
         """
-        if timestamp is not None:
-            raise ValueError(await get_temporal_feature_error_message_async("async", "add", "timestamp"))
-
         normalized_expiration_date = _normalize_expiration_date(expiration_date)
-        temporal_usage_notice = detect_temporal_usage_from_metadata(metadata)
+        notice_metadata = {
+            key: value
+            for key, value in (metadata or {}).items()
+            if key not in {"source_session_date", "source_session_timestamp", "source_session_id", "observation_date"}
+        }
+        temporal_usage_notice = detect_temporal_usage_from_metadata(notice_metadata)
+
+        source_timestamp_value = timestamp
+        if source_timestamp_value is None and metadata:
+            source_timestamp_value = metadata.get("source_session_timestamp")
+        source_session_timestamp = _normalize_source_session_timestamp(source_timestamp_value)
+        source_session_date = _resolve_source_session_date(source_timestamp_value, metadata)
+        if source_session_date is not None or source_session_timestamp is not None:
+            metadata = deepcopy(metadata) if metadata else {}
+            if source_session_date is not None:
+                metadata["source_session_date"] = source_session_date
+            if source_session_timestamp is not None:
+                metadata["source_session_timestamp"] = source_session_timestamp
+
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id, agent_id=agent_id, run_id=run_id, input_metadata=metadata
         )
@@ -2543,7 +2651,14 @@ class AsyncMemory(MemoryBase):
         else:
             messages = parse_vision_messages(messages)
 
-        vector_store_result = await self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, prompt=prompt)
+        vector_store_result = await self._add_to_vector_store(
+            messages,
+            processed_metadata,
+            effective_filters,
+            infer,
+            prompt=prompt,
+            observation_date=source_session_date,
+        )
         scale_threshold_notice = await asyncio.to_thread(detect_scale_threshold_from_add_result, self, vector_store_result)
         if temporal_usage_notice:
             await display_temporal_usage_notice_async(self, "async", "add", *temporal_usage_notice)
@@ -2560,6 +2675,7 @@ class AsyncMemory(MemoryBase):
         effective_filters: dict,
         infer: bool,
         prompt: Optional[str] = None,
+        observation_date: Optional[str] = None,
     ):
         if not infer:
             returned_memories = []
@@ -2600,7 +2716,7 @@ class AsyncMemory(MemoryBase):
         # === V3 PHASED BATCH PIPELINE (async) ===
 
         # Phase 0: Context gathering
-        session_scope = _build_session_scope(effective_filters)
+        session_scope = _build_session_scope(effective_filters, (metadata or {}).get("source_session_id"))
         last_messages = await asyncio.to_thread(self.db.get_last_messages, session_scope, 10)
         parsed_messages = parse_messages(messages)
 
@@ -2634,6 +2750,7 @@ class AsyncMemory(MemoryBase):
             existing_memories=existing_memories,
             new_messages=parsed_messages,
             last_k_messages=last_messages,
+            timestamp=observation_date,
             custom_instructions=custom_instr,
         )
 
