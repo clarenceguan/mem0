@@ -852,7 +852,7 @@ class Memory(MemoryBase):
             agent_id (str, optional): ID of the agent creating the memory. Defaults to None.
             run_id (str, optional): ID of the run creating the memory. Defaults to None.
             metadata (dict, optional): Metadata to store with the memory. Defaults to None.
-            timestamp (Any, optional): Platform-only temporal parameter. Not supported in OSS.
+            timestamp (Any, optional): Source session timestamp (Unix seconds), date/datetime, or ISO date/datetime string. Used as the observation date for extraction and preserved as source-session metadata.
             expiration_date (Any, optional): Date in YYYY-MM-DD format. Expired memories are hidden
                 from search and get_all unless show_expired is True.
             infer (bool, optional): If True (default), an LLM is used to extract key facts from
