@@ -337,7 +337,19 @@ async def ingest_conversation(
                     debug_file.write(f"  {msg['role']}: {msg['content']}\n")
                 debug_file.write("\n")
 
-            response = await mem0.add(messages, user_id, timestamp=session_epoch)
+            response = await mem0.add(
+                messages,
+                user_id,
+                observation_date=(date_str[:10] if date_str else None),
+                timestamp=session_epoch,
+                metadata={
+                    "source_session_date": (
+                        parse_locomo_date(date_str).date().isoformat()
+                        if parse_locomo_date(date_str) else None
+                    ),
+                    "source_session_id": f"conv{conv_idx}_{session_key}",
+                },
+            )
 
             if response is not None:
                 total_processed += 1
@@ -907,11 +919,12 @@ async def async_main() -> None:
             if args.user_profile:
                 user_profile = await mem0.get_user_profile(user_id)
 
-            # Get reference date from first session
+            # Use the latest source conversation date as the benchmark reference date.
             sorted_sessions = get_sorted_sessions(conversation)
             ref_date_human = None
             if sorted_sessions:
-                ref_date_human = sorted_sessions[-1][1]
+                latest_parsed = parse_locomo_date(sorted_sessions[-1][1])
+                ref_date_human = latest_parsed.strftime("%A, %B %d, %Y") if latest_parsed else sorted_sessions[-1][1]
 
             # --- Process questions ---
             questions = entry.get("qa", entry.get("qa_pairs", []))
