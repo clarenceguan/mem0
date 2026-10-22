@@ -142,12 +142,13 @@ class Mem0Client:
         if timestamp is not None:
             payload["timestamp"] = timestamp
         elif observation_date is not None:
-            # Convert ISO date to unix epoch
             try:
                 d = datetime.strptime(observation_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 payload["timestamp"] = int(d.timestamp())
             except ValueError:
                 pass
+        if observation_date:
+            payload["observation_date"] = observation_date
         if custom_instructions:
             payload["custom_instructions"] = custom_instructions
         if metadata:
@@ -290,6 +291,12 @@ class Mem0Client:
                         entry["created_at"] = r["created_at"]
                     if r.get("updated_at"):
                         entry["updated_at"] = r["updated_at"]
+                    if r.get("metadata") is not None:
+                        entry["metadata"] = r["metadata"]
+                    # Preserve temporal metadata exposed at the top level by Mem0 OSS.
+                    for temporal_key in ("source_session_date", "source_session_timestamp", "source_session_id"):
+                        if r.get(temporal_key) is not None:
+                            entry[temporal_key] = r[temporal_key]
                     # Map score_breakdown → score_debug for consistency
                     breakdown = r.get("score_breakdown") or r.get("score_debug")
                     if breakdown:
@@ -471,6 +478,11 @@ def format_search_results(search_results: list[dict]) -> tuple[list[dict], dict 
             entry["created_at"] = r["created_at"]
         if r.get("updated_at"):
             entry["updated_at"] = r["updated_at"]
+        if r.get("metadata") is not None:
+            entry["metadata"] = r["metadata"]
+        for temporal_key in ("source_session_date", "source_session_timestamp", "source_session_id"):
+            if r.get(temporal_key) is not None:
+                entry[temporal_key] = r[temporal_key]
         if r.get("score_debug"):
             entry["score_debug"] = r["score_debug"]
         formatted.append(entry)
