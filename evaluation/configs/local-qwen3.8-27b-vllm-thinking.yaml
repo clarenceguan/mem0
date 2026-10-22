@@ -24,7 +24,6 @@ llm:
       repetition_penalty: 1.0
       chat_template_kwargs:
         enable_thinking: true
-        preserve_thinking: true
 
 embedder:
   provider: huggingface
@@ -37,8 +36,8 @@ embedder:
 vector_store:
   provider: qdrant
   config:
-    path: ./data/qdrant_locomo
-    collection_name: locomo_qwen3
+    path: ./data/qdrant_locomo_qwen38
+    collection_name: locomo_qwen38
     embedding_model_dims: 1024
 
-history_db_path: ./data/history_locomo.db
+history_db_path: ./data/history_locomo_qwen38.db
