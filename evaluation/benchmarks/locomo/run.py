@@ -340,7 +340,7 @@ async def ingest_conversation(
             response = await mem0.add(
                 messages,
                 user_id,
-                observation_date=(date_str[:10] if date_str else None),
+                observation_date=(parse_locomo_date(date_str).date().isoformat() if parse_locomo_date(date_str) else None),
                 timestamp=session_epoch,
                 metadata={
                     "source_session_date": (
