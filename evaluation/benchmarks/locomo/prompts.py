@@ -61,7 +61,7 @@ Confirm each relevant memory is about the correct person/entity. If the question
 - Re-read the question carefully before answering. If it asks "what aspect/type/kind", answer with the specific aspect. If it asks "what did they discover they both enjoy", answer with the specific thing, not the setting.
 
 ## Step 5: TEMPORAL GROUNDING
-These conversations took place around {reference_date}. All events occurred in 2022-2024.
+These conversations took place around {reference_date}, the latest source conversation date for this conversation. This is not the benchmark run date. Never use a memory record creation timestamp as the event date. A session date indicates when a fact was mentioned; the event itself may have happened earlier or later if the memory says so. All events occurred in 2022-2024.
 - Calculate time relative to this date, NOT today. Never output 2025 or 2026.
 - Use dates explicitly stated in memory text. Do not invent or estimate dates.
 - When a question asks what someone "shared" or "mentioned" on a date, that date is when they TALKED about it — look for events shortly BEFORE that date.
@@ -168,17 +168,34 @@ def get_answer_generation_prompt(
         memories_text = "(No relevant memories found)"
     else:
         top_results = search_results[:ANSWERER_MEMORY_LIMIT]
-        # Sort chronologically (oldest first) to present as a narrative
-        sorted_results = sorted(top_results, key=lambda x: x.get("created_at", ""))
-        lines = ["The following memories are presented in chronological order (oldest to newest).", ""]
+
+        def _source_date(result):
+            metadata = result.get("metadata") or {}
+            return (
+                result.get("source_session_date")
+                or metadata.get("source_session_date")
+                or metadata.get("observation_date")
+                or ""
+            )
+
+        # Sort by source conversation date, not by ingestion/write time.
+        sorted_results = sorted(top_results, key=lambda x: (_source_date(x), x.get("created_at", "")))
+        lines = [
+            "The following memories are presented in source-session chronological order (oldest first).",
+            "A session date indicates when the fact was mentioned, not necessarily when the underlying event happened.",
+            "",
+        ]
         for result in sorted_results:
             memory = result.get("memory", "")
-            created_at = result.get("created_at", "")
-            if created_at:
-                date_str = _to_human_date(created_at)
-                lines.append(f"({date_str}) {memory}")
+            source_date = _source_date(result)
+            if source_date:
+                date_str = _to_human_date(source_date)
+                lines.append(f"(Session date: {date_str}) {memory}")
+            elif result.get("created_at"):
+                date_str = _to_human_date(result["created_at"])
+                lines.append(f"(Session date unknown; record created {date_str}) {memory}")
             else:
-                lines.append(f"(unknown date) {memory}")
+                lines.append(f"(Session date unknown) {memory}")
         memories_text = "\n".join(lines)
 
     # Optionally prepend user profile section before memories
