@@ -52,6 +52,7 @@ class LLMClient:
         max_retries: int = 5,
         rpm: int = 200,
         timeout: float = 120.0,
+        extra_body: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
         self.model = model
@@ -59,6 +60,9 @@ class LLMClient:
         self.max_retries = max_retries
         self.limiter = AsyncLimiter(rpm, 60)
         self.timeout = timeout
+        if extra_body is None and os.getenv("EVAL_DISABLE_THINKING", "").strip().lower() in {"1", "true", "yes", "on"}:
+            extra_body = {"enable_thinking": False}
+        self.extra_body = extra_body
         self._client: Any = None
 
         if self.provider == "anthropic":
@@ -81,6 +85,10 @@ class LLMClient:
         if m.startswith(("gpt-5", "o1", "o3", "o4")):
             return {}
         return {"temperature": temperature}
+
+    def _openai_extra_body_kwargs(self) -> dict[str, Any]:
+        """Return configured provider-specific request-body options, if any."""
+        return {"extra_body": self.extra_body} if self.extra_body is not None else {}
 
     def _parse_yes_no_judgment(self, raw: str) -> bool:
         """Extract the final yes/no verdict from judge output."""
@@ -170,6 +178,7 @@ class LLMClient:
                             messages=messages,
                             **self._openai_chat_temperature_kwargs(temperature),
                             **self._openai_chat_token_limit_kwargs(max_tokens),
+                            **self._openai_extra_body_kwargs(),
                         ),
                         timeout=self.timeout,
                     )
@@ -272,6 +281,7 @@ class LLMClient:
                             **self._openai_chat_temperature_kwargs(temperature),
                             response_format={"type": "json_object"},
                             **self._openai_chat_token_limit_kwargs(max_tokens),
+                            **self._openai_extra_body_kwargs(),
                         ),
                         timeout=self.timeout,
                     )
