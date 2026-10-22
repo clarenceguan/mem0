@@ -683,6 +683,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge-model", default="gpt-5", help="Model for judging")
     parser.add_argument("--provider", default="openai", help="LLM provider (openai, anthropic, azure)")
     parser.add_argument("--judge-provider", default=None, help="Judge provider (defaults to --provider)")
+    parser.add_argument("--answerer-api-key", default=os.getenv("ANSWERER_API_KEY"), help="Answerer API key (defaults to provider SDK environment variables)")
+    parser.add_argument("--answerer-base-url", default=os.getenv("ANSWERER_BASE_URL"), help="Answerer OpenAI-compatible API base URL")
+    parser.add_argument("--judge-api-key", default=os.getenv("JUDGE_API_KEY"), help="Judge API key (defaults to provider SDK environment variables)")
+    parser.add_argument("--judge-base-url", default=os.getenv("JUDGE_BASE_URL"), help="Judge OpenAI-compatible API base URL")
+    parser.add_argument("--disable-thinking", action="store_true", help="Disable thinking for both Answerer and Judge on compatible APIs")
+    parser.add_argument("--answerer-disable-thinking", action="store_true", help="Disable thinking for Answerer only")
+    parser.add_argument("--judge-disable-thinking", action="store_true", help="Disable thinking for Judge only")
     parser.add_argument("--conversations", default="0,1,2,3,4,5,6,7,8,9", help="Comma-separated conversation indices")
     parser.add_argument("--top-k", type=int, default=200, help="Number of search results to retrieve")
     parser.add_argument("--top-k-cutoffs", default="10,20,50,200", help="Comma-separated cutoffs for evaluation")
@@ -725,6 +732,8 @@ def parse_args() -> argparse.Namespace:
 
 async def async_main() -> None:
     args = parse_args()
+    env_disable_thinking = os.getenv("EVAL_DISABLE_THINKING", "").strip().lower() in {"1", "true", "yes", "on"}
+    disable_all_thinking = args.disable_thinking or env_disable_thinking
     logger = setup_logging("locomo", debug=args.debug)
 
     cutoffs = parse_cutoffs(args.top_k_cutoffs)
@@ -740,6 +749,10 @@ async def async_main() -> None:
     print(f"  Judge: {args.judge_model} ({args.judge_provider or args.provider})")
     print(f"  Conversations: {args.conversations}")
     print(f"  Cutoffs: {args.top_k_cutoffs}")
+    print("  Thinking: answerer=%s, judge=%s" % (
+        "disabled" if disable_all_thinking or args.answerer_disable_thinking else "provider default",
+        "disabled" if disable_all_thinking or args.judge_disable_thinking else "provider default",
+    ))
 
     # Load dataset
     if args.dataset_path:
@@ -754,9 +767,19 @@ async def async_main() -> None:
         evidence_lookup = load_evidence_lookup(dataset_path)
         print(f"  Evidence lookup: {len(evidence_lookup)} entries")
 
-    answerer = LLMClient(model=args.answerer_model, provider=args.provider, rpm=args.rpm)
+    answerer_extra_body = {"enable_thinking": False} if disable_all_thinking or args.answerer_disable_thinking else None
+    answerer = LLMClient(
+        model=args.answerer_model, provider=args.provider,
+        api_key=args.answerer_api_key, base_url=args.answerer_base_url,
+        rpm=args.rpm, extra_body=answerer_extra_body,
+    )
     judge_provider = args.judge_provider or args.provider
-    judge_llm = LLMClient(model=args.judge_model, provider=judge_provider, rpm=args.rpm)
+    judge_extra_body = {"enable_thinking": False} if disable_all_thinking or args.judge_disable_thinking else None
+    judge_llm = LLMClient(
+        model=args.judge_model, provider=judge_provider,
+        api_key=args.judge_api_key, base_url=args.judge_base_url,
+        rpm=args.rpm, extra_body=judge_extra_body,
+    )
 
     if args.evaluate_only:
         expected_items = expected_locomo_question_items(
