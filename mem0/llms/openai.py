@@ -133,6 +133,10 @@ class OpenAILLM(LLMBase):
             if self.config.store is not None:
                 params["store"] = self.config.store
 
+        # Forward provider-specific options such as DashScope's enable_thinking.
+        if self.config.extra_body is not None:
+            params["extra_body"] = self.config.extra_body
+
         if response_format:
             params["response_format"] = response_format
         if tools:  # TODO: Remove tools if no issues found with new memory addition logic
