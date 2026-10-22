@@ -10,6 +10,9 @@ llm:
     api_key: ${LLM_API_KEY}
     openai_base_url: ${LLM_BASE_URL}
     temperature: 0.1
+    # For OpenAI-compatible Qwen endpoints; remove or set true to use thinking.
+    extra_body:
+      enable_thinking: false
 
 embedder:
   provider: huggingface
