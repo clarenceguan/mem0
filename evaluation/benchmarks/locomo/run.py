@@ -493,6 +493,8 @@ async def process_question(
         raw = await judge_llm.generate_structured(
             system=JUDGE_SYSTEM_PROMPT,
             user=judge_prompt,
+            log_response=log_answerer_output,
+            response_label=f"conv{conv_idx}_q{qa_idx} | {label}",
         )
         if isinstance(raw, dict):
             label_val = raw.get("label", "").upper()
@@ -569,6 +571,8 @@ async def apply_locomo_judge_to_saved_result(
         raw = await judge_llm.generate_structured(
             system=JUDGE_SYSTEM_PROMPT,
             user=judge_prompt,
+            log_response=log_answerer_output,
+            response_label=f"{result.get('question_id', f'conv{conv_idx}')} | {label}",
         )
         if isinstance(raw, dict):
             label_val = raw.get("label", "").upper()
@@ -731,8 +735,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
     parser.add_argument("--debug", action="store_true", help="Verbose logging")
     parser.add_argument(
-        "--show-answerer-output", action="store_true",
-        help="Print Answerer reasoning fields (if exposed) and final response for each cutoff",
+        "--show-answerer-output", "--show-llm-output",
+        dest="show_answerer_output", action="store_true",
+        help="Print Answerer and Judge reasoning fields (if exposed) and raw responses for each cutoff",
     )
     parser.add_argument("--score-debug", action="store_true", help="Include score breakdowns in output")
     parser.add_argument("--dataset-path", default=None, help="Path to local locomo10.json")
