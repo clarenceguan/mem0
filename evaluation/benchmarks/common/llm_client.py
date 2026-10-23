@@ -339,6 +339,8 @@ class LLMClient:
         response_format: type[T] | None = None,
         temperature: float = 0,
         max_tokens: int = 4096,
+        log_response: bool = False,
+        response_label: str | None = None,
     ) -> Any:
         """Generate a structured response.
 
@@ -351,13 +353,21 @@ class LLMClient:
             response_format: Pydantic model class for validation (optional).
             temperature: Sampling temperature.
             max_tokens: Maximum tokens.
+            log_response: Print reasoning fields (if exposed) and raw structured response.
+            response_label: Optional question/cutoff label for debug output.
 
         Returns:
             Parsed dict or Pydantic model instance.
         """
         if self.provider == "anthropic":
-            return await self._generate_structured_anthropic(system, user, response_format, temperature, max_tokens)
-        return await self._generate_structured_openai(system, user, response_format, temperature, max_tokens)
+            return await self._generate_structured_anthropic(
+                system, user, response_format, temperature, max_tokens,
+                log_response=log_response, response_label=response_label,
+            )
+        return await self._generate_structured_openai(
+            system, user, response_format, temperature, max_tokens,
+            log_response=log_response, response_label=response_label,
+        )
 
     async def _generate_structured_openai(
         self,
@@ -366,6 +376,8 @@ class LLMClient:
         response_format: type[T] | None,
         temperature: float,
         max_tokens: int,
+        log_response: bool = False,
+        response_label: str | None = None,
     ) -> Any:
         messages = []
         if system:
@@ -386,7 +398,16 @@ class LLMClient:
                         ),
                         timeout=self.timeout,
                     )
-                raw = resp.choices[0].message.content
+                message = resp.choices[0].message
+                raw = message.content or ""
+                if log_response:
+                    _print_generation_response(
+                        model=self.model,
+                        label=response_label,
+                        message=message,
+                        content=raw,
+                        role="JUDGE",
+                    )
                 if not raw:
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(2 * (attempt + 1))
@@ -425,6 +446,8 @@ class LLMClient:
         response_format: type[T] | None,
         temperature: float,
         max_tokens: int,
+        log_response: bool = False,
+        response_label: str | None = None,
     ) -> Any:
         # Anthropic doesn't have native JSON mode; instruct in system prompt
         json_system = system
@@ -448,6 +471,14 @@ class LLMClient:
                     )
                 raw = resp.content[0].text if resp.content else ""
                 raw = raw.strip()
+                if log_response:
+                    _print_generation_response(
+                        model=self.model,
+                        label=response_label,
+                        message=None,
+                        content=raw,
+                        role="JUDGE",
+                    )
 
                 # Extract JSON from code blocks if wrapped
                 json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
