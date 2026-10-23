@@ -65,8 +65,9 @@ def _print_generation_response(
     label: str | None,
     message: Any | None,
     content: str,
+    role: str = "ANSWERER",
 ) -> None:
-    """Print answerer reasoning (if exposed by the API) and final content."""
+    """Print model reasoning (if exposed) and raw response content."""
     reasoning_fields = _extract_reasoning_fields(message) if message is not None else []
     display_content = content or ""
 
@@ -81,7 +82,7 @@ def _print_generation_response(
 
     suffix = f" | {label}" if label else ""
     print("\n" + "=" * 88, flush=True)
-    print(f"[ANSWERER OUTPUT] model={model}{suffix}", flush=True)
+    print(f"[{role} OUTPUT] model={model}{suffix}", flush=True)
     if reasoning_fields:
         for field, value in reasoning_fields:
             print(f"\n[{field}]", flush=True)
