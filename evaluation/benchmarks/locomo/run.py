@@ -414,6 +414,7 @@ async def process_question(
     predict_only: bool,
     logger: Any,
     score_debug: bool = False,
+    log_answerer_output: bool = False,
 ) -> dict[str, Any]:
     """Process a single question: search + answer + judge at multiple cutoffs.
 
@@ -475,7 +476,11 @@ async def process_question(
 
         # Generate answer
         gen_prompt = get_answer_generation_prompt(question, sliced, reference_date=reference_date_human, user_profile=user_profile)
-        generated_answer = await answerer.generate(system="", user=gen_prompt)
+        generated_answer = await answerer.generate(
+            system="", user=gen_prompt,
+            log_response=log_answerer_output,
+            response_label=f"conv{conv_idx}_q{qa_idx} | {label}",
+        )
         if "ANSWER:" in generated_answer:
             generated_answer = generated_answer.rsplit("ANSWER:", 1)[-1].strip()
 
@@ -518,6 +523,7 @@ async def apply_locomo_judge_to_saved_result(
     judge_llm: LLMClient,
     cutoffs: list[int],
     evidence_lookup: dict | None,
+    log_answerer_output: bool = False,
 ) -> None:
     """Fill ``cutoff_results`` using ``retrieval.search_results`` only (no Mem0)."""
     formatted = list(result["retrieval"]["search_results"])
@@ -545,7 +551,11 @@ async def apply_locomo_judge_to_saved_result(
         gen_prompt = get_answer_generation_prompt(
             question, sliced, reference_date=reference_date_human, user_profile=user_profile,
         )
-        generated_answer = await answerer.generate(system="", user=gen_prompt)
+        generated_answer = await answerer.generate(
+            system="", user=gen_prompt,
+            log_response=log_answerer_output,
+            response_label=f"{result.get('question_id', f'conv{conv_idx}')} | {label}",
+        )
         if "ANSWER:" in generated_answer:
             generated_answer = generated_answer.rsplit("ANSWER:", 1)[-1].strip()
 
@@ -720,6 +730,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
     parser.add_argument("--debug", action="store_true", help="Verbose logging")
+    parser.add_argument(
+        "--show-answerer-output", action="store_true",
+        help="Print Answerer reasoning fields (if exposed) and final response for each cutoff",
+    )
     parser.add_argument("--score-debug", action="store_true", help="Include score breakdowns in output")
     parser.add_argument("--dataset-path", default=None, help="Path to local locomo10.json")
     parser.add_argument("--run-id", default=None, help="Reuse a specific run_id for resume")
@@ -821,6 +835,7 @@ async def async_main() -> None:
             async with sem:
                 await apply_locomo_judge_to_saved_result(
                     data, qa, conv_idx, answerer, judge_llm, cutoffs, evidence_lookup,
+                    log_answerer_output=args.show_answerer_output,
                 )
                 save_result_json(path, data)
 
@@ -963,6 +978,7 @@ async def async_main() -> None:
                     predict_only=args.predict_only,
                     logger=logger,
                     score_debug=args.score_debug,
+                    log_answerer_output=args.show_answerer_output,
                 )
 
                 # Save per-question result
