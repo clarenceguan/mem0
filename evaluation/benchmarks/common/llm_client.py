@@ -27,6 +27,74 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def _stringify_response_value(value: Any) -> str:
+    """Render provider-specific response fields for human-readable debug output."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _extract_reasoning_fields(message: Any) -> list[tuple[str, Any]]:
+    """Extract reasoning fields exposed by OpenAI-compatible response objects."""
+    payload: dict[str, Any] = {}
+    try:
+        dumped = message.model_dump()
+        if isinstance(dumped, dict):
+            payload.update(dumped)
+    except Exception:
+        pass
+
+    found: list[tuple[str, Any]] = []
+    for field in ("reasoning_content", "reasoning"):
+        value = getattr(message, field, None)
+        if value is None:
+            value = payload.get(field)
+        if value is not None and value != "" and value != [] and value != {}:
+            found.append((field, value))
+    return found
+
+
+def _print_generation_response(
+    *,
+    model: str,
+    label: str | None,
+    message: Any | None,
+    content: str,
+) -> None:
+    """Print answerer reasoning (if exposed by the API) and final content."""
+    reasoning_fields = _extract_reasoning_fields(message) if message is not None else []
+    display_content = content or ""
+
+    # Some endpoints put reasoning inside <think> tags in content rather than
+    # returning a separate reasoning_content/reasoning field. Split only for
+    # display; the original content returned to the benchmark is unchanged.
+    if not reasoning_fields:
+        match = re.search(r"<think>(.*?)</think>", display_content, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            reasoning_fields.append(("reasoning (extracted from <think> tags)", match.group(1).strip()))
+            display_content = (display_content[:match.start()] + display_content[match.end():]).strip()
+
+    suffix = f" | {label}" if label else ""
+    print("\n" + "=" * 88, flush=True)
+    print(f"[ANSWERER OUTPUT] model={model}{suffix}", flush=True)
+    if reasoning_fields:
+        for field, value in reasoning_fields:
+            print(f"\n[{field}]", flush=True)
+            rendered = _stringify_response_value(value)
+            print(rendered if rendered else "<empty>", flush=True)
+    else:
+        print("\n[reasoning_content / reasoning]", flush=True)
+        print("<not exposed separately by the API response>", flush=True)
+    print("\n[response content]", flush=True)
+    print(display_content if display_content else "<empty>", flush=True)
+    print("=" * 88, flush=True)
+
+
 class LLMClient:
     """Async LLM client with retry logic and rate limiting.
 
@@ -147,6 +215,8 @@ class LLMClient:
         user: str,
         temperature: float = 0,
         max_tokens: int = 4096,
+        log_response: bool = False,
+        response_label: str | None = None,
     ) -> str:
         """Generate a text response.
 
@@ -155,15 +225,33 @@ class LLMClient:
             user: User message.
             temperature: Sampling temperature.
             max_tokens: Maximum tokens in the response.
+            log_response: Print reasoning fields (if exposed) and response content.
+            response_label: Optional question/cutoff label for debug output.
 
         Returns:
             Generated text string.
         """
         if self.provider == "anthropic":
-            return await self._generate_anthropic(system, user, temperature, max_tokens)
-        return await self._generate_openai(system, user, temperature, max_tokens)
+            content = await self._generate_anthropic(system, user, temperature, max_tokens)
+            if log_response:
+                _print_generation_response(
+                    model=self.model, label=response_label, message=None, content=content,
+                )
+            return content
+        return await self._generate_openai(
+            system, user, temperature, max_tokens,
+            log_response=log_response, response_label=response_label,
+        )
 
-    async def _generate_openai(self, system: str, user: str, temperature: float, max_tokens: int) -> str:
+    async def _generate_openai(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        max_tokens: int,
+        log_response: bool = False,
+        response_label: str | None = None,
+    ) -> str:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -182,7 +270,8 @@ class LLMClient:
                         ),
                         timeout=self.timeout,
                     )
-                content = resp.choices[0].message.content
+                message = resp.choices[0].message
+                content = message.content
                 if content is None:
                     logger.warning(
                         "Generation returned None (finish_reason=%s)",
@@ -191,7 +280,18 @@ class LLMClient:
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(2 * (attempt + 1))
                         continue
+                    if log_response:
+                        _print_generation_response(
+                            model=self.model, label=response_label, message=message, content="",
+                        )
                     return ""
+                if log_response:
+                    _print_generation_response(
+                        model=self.model,
+                        label=response_label,
+                        message=message,
+                        content=content,
+                    )
                 return content.strip()
             except asyncio.TimeoutError:
                 logger.warning("Generation attempt %d/%d timed out", attempt + 1, self.max_retries)
