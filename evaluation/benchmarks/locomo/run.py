@@ -716,6 +716,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable-thinking", action="store_true", help="Disable thinking for both Answerer and Judge on compatible APIs")
     parser.add_argument("--answerer-disable-thinking", action="store_true", help="Disable thinking for Answerer only")
     parser.add_argument("--judge-disable-thinking", action="store_true", help="Disable thinking for Judge only")
+    parser.add_argument(
+        "--vllm", "--answerer-vllm",
+        dest="answerer_vllm", action="store_true",
+        help=(
+            "Use vLLM's chat_template_kwargs.enable_thinking for the Answerer "
+            "(true by default, false with --disable-thinking or --answerer-disable-thinking); "
+            "Judge configuration is unchanged"
+        ),
+    )
     parser.add_argument("--conversations", default="0,1,2,3,4,5,6,7,8,9", help="Comma-separated conversation indices")
     parser.add_argument("--top-k", type=int, default=200, help="Number of search results to retrieve")
     parser.add_argument("--top-k-cutoffs", default="10,20,50,200", help="Comma-separated cutoffs for evaluation")
@@ -780,10 +789,15 @@ async def async_main() -> None:
     print(f"  Judge: {args.judge_model} ({args.judge_provider or args.provider})")
     print(f"  Conversations: {args.conversations}")
     print(f"  Cutoffs: {args.top_k_cutoffs}")
+    answerer_thinking_disabled = disable_all_thinking or args.answerer_disable_thinking
+    judge_thinking_disabled = disable_all_thinking or args.judge_disable_thinking
     print("  Thinking: answerer=%s, judge=%s" % (
-        "disabled" if disable_all_thinking or args.answerer_disable_thinking else "provider default",
-        "disabled" if disable_all_thinking or args.judge_disable_thinking else "provider default",
+        "disabled" if answerer_thinking_disabled else ("enabled (vLLM)" if args.answerer_vllm else "provider default"),
+        "disabled" if judge_thinking_disabled else "provider default",
     ))
+    if args.answerer_vllm:
+        print("  Answerer request: extra_body.chat_template_kwargs.enable_thinking=%s" %
+              ("false" if answerer_thinking_disabled else "true"))
 
     # Load dataset
     if args.dataset_path:
@@ -798,14 +812,21 @@ async def async_main() -> None:
         evidence_lookup = load_evidence_lookup(dataset_path)
         print(f"  Evidence lookup: {len(evidence_lookup)} entries")
 
-    answerer_extra_body = {"enable_thinking": False} if disable_all_thinking or args.answerer_disable_thinking else None
+    if args.answerer_vllm:
+        if args.provider.lower() != "openai":
+            raise ValueError("--vllm/--answerer-vllm requires --provider openai (OpenAI-compatible vLLM API)")
+        answerer_extra_body = {
+            "chat_template_kwargs": {"enable_thinking": not answerer_thinking_disabled}
+        }
+    else:
+        answerer_extra_body = {"enable_thinking": False} if answerer_thinking_disabled else None
     answerer = LLMClient(
         model=args.answerer_model, provider=args.provider,
         api_key=args.answerer_api_key, base_url=args.answerer_base_url,
         rpm=args.rpm, extra_body=answerer_extra_body,
     )
     judge_provider = args.judge_provider or args.provider
-    judge_extra_body = {"enable_thinking": False} if disable_all_thinking or args.judge_disable_thinking else None
+    judge_extra_body = {"enable_thinking": False} if judge_thinking_disabled else None
     judge_llm = LLMClient(
         model=args.judge_model, provider=judge_provider,
         api_key=args.judge_api_key, base_url=args.judge_base_url,
