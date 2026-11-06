@@ -1,5 +1,7 @@
+import functools
 import logging
 import re
+import threading
 from typing import Optional
 
 from qdrant_client import QdrantClient, models
@@ -24,6 +26,27 @@ from qdrant_client.models import (
 from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_local_mode(method):
+    """Serialize operations for the in-process Qdrant local client.
+
+    ``qdrant_client``'s local mode keeps payload/deletion state in Python
+    lists and is not safe for concurrent reads and writes. The Mem0 OSS server
+    handles requests in FastAPI's thread pool, so parallel conversations can
+    otherwise mutate those lists while another thread is building a filter
+    mask (``IndexError: index ... is out of bounds``). Remote Qdrant already
+    handles concurrency and is left untouched.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if getattr(self, "is_local", False):
+            with self._local_lock:
+                return method(self, *args, **kwargs)
+        return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class Qdrant(VectorStoreBase):
@@ -83,6 +106,10 @@ class Qdrant(VectorStoreBase):
         self.collection_name = collection_name
         self.embedding_model_dims = embedding_model_dims
         self.on_disk = on_disk
+        # Guards the embedded (path-based) Qdrant client, which is not
+        # thread-safe. RLock allows the public methods below to call each other
+        # (e.g. reset -> delete_col/create_col).
+        self._local_lock = threading.RLock()
         self._bm25_encoder = None
         # Whether this collection has the `bm25` named sparse vector slot.
         # Pre-v3 collections lack it; writing a `bm25` sparse vector into such a
@@ -125,6 +152,7 @@ class Qdrant(VectorStoreBase):
             logger.debug(f"BM25 encoding failed: {e}")
         return None
 
+    @_serialize_local_mode
     def create_col(self, vector_size: int, on_disk: bool, distance: Distance = Distance.COSINE):
         """
         Create a new collection with dense vectors and BM25 sparse vectors.
@@ -163,6 +191,7 @@ class Qdrant(VectorStoreBase):
         self._has_bm25_slot = True
         self._create_filter_indexes()
 
+    @_serialize_local_mode
     def _create_filter_indexes(self):
         """Create indexes for commonly used filter fields to enable filtering."""
         # Only create payload indexes for remote Qdrant servers
@@ -183,6 +212,7 @@ class Qdrant(VectorStoreBase):
             except Exception as e:
                 logger.debug(f"Index for {field} might already exist: {e}")
 
+    @_serialize_local_mode
     def insert(self, vectors: list, payloads: list = None, ids: list = None):
         """
         Insert vectors into a collection, including BM25 sparse vectors
@@ -412,6 +442,7 @@ class Qdrant(VectorStoreBase):
             must_not=must_not or None,
         )
 
+    @_serialize_local_mode
     def search(self, query: str, vectors: list, top_k: int = 5, filters: dict = None) -> list:
         """
         Search for similar vectors.
@@ -434,6 +465,7 @@ class Qdrant(VectorStoreBase):
         )
         return hits.points
 
+    @_serialize_local_mode
     def search_batch(self, queries: list, vectors_list: list, top_k: int = 1, filters: dict = None):
         """Batch search using Qdrant's query_batch_points for efficiency."""
         query_filter = self._create_filter(filters) if filters else None
@@ -451,6 +483,7 @@ class Qdrant(VectorStoreBase):
             logger.warning(f"Batch search failed, falling back to sequential: {e}")
             return [self.search(q, v, top_k=top_k, filters=filters) for q, v in zip(queries, vectors_list)]
 
+    @_serialize_local_mode
     def keyword_search(self, query, top_k=5, filters=None):
         """
         Search using BM25 sparse vectors for keyword-based retrieval.
@@ -483,6 +516,7 @@ class Qdrant(VectorStoreBase):
             logger.debug(f"BM25 keyword search failed: {e}")
             return None
 
+    @_serialize_local_mode
     def delete(self, vector_id: int):
         """
         Delete a vector by ID.
@@ -497,6 +531,7 @@ class Qdrant(VectorStoreBase):
             ),
         )
 
+    @_serialize_local_mode
     def update(self, vector_id: int, vector: list = None, payload: dict = None):
         """
         Update a vector and its payload.
@@ -535,6 +570,7 @@ class Qdrant(VectorStoreBase):
                     points=[PointVectors(id=vector_id, vector=vector)],
                 )
 
+    @_serialize_local_mode
     def get(self, vector_id: int) -> dict:
         """
         Retrieve a vector by ID.
@@ -548,6 +584,7 @@ class Qdrant(VectorStoreBase):
         result = self.client.retrieve(collection_name=self.collection_name, ids=[vector_id], with_payload=True)
         return result[0] if result else None
 
+    @_serialize_local_mode
     def list_cols(self) -> list:
         """
         List all collections.
@@ -557,10 +594,12 @@ class Qdrant(VectorStoreBase):
         """
         return self.client.get_collections()
 
+    @_serialize_local_mode
     def delete_col(self):
         """Delete a collection."""
         self.client.delete_collection(collection_name=self.collection_name)
 
+    @_serialize_local_mode
     def col_info(self) -> dict:
         """
         Get information about a collection.
@@ -570,6 +609,7 @@ class Qdrant(VectorStoreBase):
         """
         return self.client.get_collection(collection_name=self.collection_name)
 
+    @_serialize_local_mode
     def list(self, filters: dict = None, top_k: int = 100) -> list:
         """
         List all vectors in a collection.
@@ -591,6 +631,7 @@ class Qdrant(VectorStoreBase):
         )
         return result
 
+    @_serialize_local_mode
     def reset(self):
         """Reset the index by deleting and recreating it."""
         logger.warning(f"Resetting index {self.collection_name}...")

@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 import uuid
 from unittest.mock import MagicMock, patch
@@ -75,6 +76,53 @@ class TestQdrant(unittest.TestCase):
                 self.assertEqual(len(store.list(top_k=10)[0]), 0)
                 sparse = store.client.get_collection("reset_me").config.params.sparse_vectors
                 self.assertIn("bm25", sparse or {})
+            finally:
+                store.client.close()
+
+    def test_local_qdrant_serializes_concurrent_reads_and_writes(self):
+        """Local Qdrant must tolerate concurrent searches and inserts.
+
+        Regression test for the FastAPI thread-pool path: multiple conversations
+        ingesting at once used to mutate qdrant-client's local payload arrays
+        while another thread searched them, raising IndexError.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Qdrant(
+                collection_name="concurrent",
+                embedding_model_dims=4,
+                path=os.path.join(tmp, "qdrant"),
+            )
+            barrier = threading.Barrier(10)
+            errors = []
+
+            def worker(worker_id):
+                try:
+                    barrier.wait(timeout=10)
+                    for idx in range(50):
+                        vector = [float(worker_id), float(idx), 0.1, 0.2]
+                        store.insert(
+                            vectors=[vector],
+                            payloads=[{"user_id": f"user_{worker_id}", "data": f"item {idx}"}],
+                            ids=[worker_id * 1000 + idx],
+                        )
+                        store.search(
+                            query="item",
+                            vectors=vector,
+                            top_k=5,
+                            filters={"user_id": f"user_{worker_id}"},
+                        )
+                except Exception as exc:  # noqa: BLE001 - collected and asserted below
+                    errors.append((worker_id, repr(exc)))
+
+            try:
+                threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=60)
+
+                self.assertEqual(errors, [])
+                self.assertEqual(store.client.count("concurrent").count, 500)
             finally:
                 store.client.close()
 
